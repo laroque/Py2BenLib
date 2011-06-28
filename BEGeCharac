@@ -1,0 +1,287 @@
+#!/usr/bin/python
+
+#####################################################################
+# a python script to take characterize pulse reset preamp detectors #
+#####################################################################
+
+# Header, import statements etc. ####################################
+import sys
+import ROOT
+import numpy
+from array import array
+from ROOT import TGraph,TCanvas,TH2D
+from math import *
+import BenLib
+ROOT.gROOT.SetBatch(1)
+ROOT.gROOT.ProcessLine(".x ~/.rootlogon.C")
+
+# Main function, handles input and calls others #####################
+def characteristics(filename,plotype='.eps',pulseV=.1):
+    '''Main function to process data'''
+    if type(pulseV)==type(''):pulseV=float(pulseV)
+
+    # Be sure not to kill stuff #####################################
+    if not filename.endswith('.data'):
+        print 'you may kill important files, must give file ending in <.data>'
+        sys.exit(1)
+    
+    # Stuff breaks here if file isn't formatted well ################
+    lines = open(filename).readlines()
+    filterlines = [line for line in lines if not line.startswith('##') and not line == '\n']
+    places = [filterlines.index(line) for line in filterlines if line.startswith('#')]
+    assert len(places)==6
+    depletion = filterlines[places[0]+1:places[1]]
+    depletion = [map(float,line.split()) for line in depletion]
+    for row in depletion: assert len(row)==5
+    HENoise = filterlines[places[1]+1:places[2]]
+    HENoise = [map(float,line.split()) for line in HENoise]
+    for row in HENoise: assert len(row)==2
+    LENoise = filterlines[places[2]+1:places[3]]
+    LENoise = [map(float,line.split()) for line in LENoise]
+    for row in HENoise: assert len(row)==2
+    efficiency = filterlines[places[3]+1:places[4]]
+    efficiency = map(float,efficiency[0].split())
+    assert len(efficiency)==8
+    sideset = filterlines[places[4]+1:places[5]]
+    sideset = map(float,sideset[0].split())
+    assert len(sideset)==3
+    sidedata = filterlines[places[5]+1:]
+    sidedata = [map(float,line.split()) for line in sidedata]
+    for row in sidedata: assert len(row)==3
+   
+    # Subroutine calls for the various parameters ###################
+    if efficiency[0]!=9999: eff_calc(efficiency,filename)
+    if HENoise[0][0]!=9999: res_plot(HENoise,filename,'_HE_noise'+plotype)
+    if LENoise[0][0]!=9999: res_plot(LENoise,filename,'_LE_noise'+plotype)
+    if depletion[0][0]!=9999: depletion_plot(depletion,filename,'_bias_dependence'+plotype,Vpulse=pulseV)
+    if sideset[0]!=9999: side_plot(sideset,sidedata,filename,'_SideScan'+plotype)
+
+# Calculate absolute and relative efficiency ########################
+def eff_calc(efficiency,filename):
+    [date,livetime,netarea,uncertainty,A0,CalDate,thCo60,B] = efficiency
+    A = BenLib.new_activity(date,CalDate,thCo60,A0)
+    [abs_ef,abs_ef_unc,rel_ef,rel_ef_unc] = BenLib.eff_calc(netarea,uncertainty,A,B,livetime)
+    outfile = open(filename.replace('.data','.out'),"w")
+    print >>outfile, "New Activity is %e" % (A)
+    print >>outfile, "Absolute efficiency is %e +/- %e" % (abs_ef,abs_ef_unc)
+    print >>outfile, "Relative efficiency is %e%% +/- %e%%" % (rel_ef,rel_ef_unc)
+    outfile.close()
+
+# Create a resolution vs shaping time plot ##########################
+def res_plot(resolution,filename,plotype):
+    elements = ['Shaping','FWHM']
+    values = BenLib.table2dic(elements,resolution)
+    xerrs = numpy.zeros(len(values['Shaping']),dtype=numpy.float64)
+    yerrs = xerrs+2.0*.18 # this should be fixed to mean something ###
+    yerrs = yerrs*0.0 # just for now
+    noisecurve = ROOT.TGraphErrors(len(values['Shaping']),values['Shaping'],numpy.array(values['FWHM'],'d')**2,xerrs,yerrs)
+    hist = TH2D("hist","FWHM^2 vs Shaping Time for "+filename.replace('.data',''),1,0.9*min(values['Shaping']),1.1*max(values['Shaping']),1,0.9*min(numpy.array(values['FWHM'],'d')**2),1.1*max(numpy.array(values['FWHM'],'d')**2))
+    hist.SetXTitle("Shaping Time [\mus]")
+    hist.SetYTitle("FWHM^2 [keV^2]")
+
+    # make a fit
+    noisefit = ROOT.TF1('noisefit','[0]*x+[1]+[2]*(1/x)',0.2,11.)
+    noisefit.SetParameters(25,150,400)
+    noisefit.SetParLimits(0,0,1000)
+    noisefit.SetParLimits(1,0,1000)
+    noisefit.SetParLimits(2,0,1000)
+    noisecurve.Fit('noisefit','RMBQ')
+    fitparams = []
+    fitparerr = []
+    for pnum in range(0,3):
+        fitparams.append(noisefit.GetParameter(pnum))
+        fitparerr.append(noisefit.GetParError(pnum))
+    paramstr = 'FWHM(#tau)=(%1.4e)#tau+(%1.4e)+(%1.4e)#frac{1}{#tau}' % (fitparams[0],fitparams[1],fitparams[2])
+    pt1 = ROOT.TLatex(.3,.8,paramstr)
+    pt1.SetTextSize(0.04)
+    pt1.SetNDC()
+
+    # Set styles and draw everything
+    c1 = TCanvas('c1','',800,600)
+    c1.SetLogx(1)
+    c1.SetLogy(1)
+    hist.SetTitleSize(5,'')
+    hist.SetTitleSize(.045,'yx')
+    hist.SetLabelSize(.04,'yx')
+    hist.SetTitleOffset(1.4,'x')
+    hist.SetTitleOffset(1.4,'y')
+    hist.GetYaxis().SetMoreLogLabels()
+    hist.GetXaxis().SetMoreLogLabels()
+    hist.Draw()
+    noisecurve.SetMarkerStyle(3)
+    noisecurve.Draw('P')
+    noisefit.SetLineColor(2)
+    noisefit.Draw('same')
+    pt1.Draw()
+
+    # Write Output
+    c1.Print(filename.replace('.data','_res'+plotype))
+    outfile = open(filename.replace('.data','.out'),'a')
+    paramsers = '(%1.4e +/- %1.4f)tau+(%1.4e +/- %1.4e)+(%1.4e +/- %1.4e)(1/tau)' % (fitparams[0],fitparerr[0],fitparams[1],fitparerr[1],fitparams[2],fitparerr[2])
+    print >>outfile, '\n'
+    print >>outfile, "noise curve fit parameters"
+    print >>outfile, paramsers
+    outfile.close()
+
+# Create bias dependent plots #######################################
+def depletion_plot(voltage,filename,plotype,Vpulse=0.100):
+    # Some initial values
+    ymin = -0.5
+    ymax = 0.5
+    xmin = 100000.0
+    xmax = 0.0
+    # And some constants
+    q_e = 1.6022E-19
+    e_gamma = 59.54E3 # for Am-241
+    e_ehp = 2.95 # energy for electron-hole pair in Ge
+    eta = 0.023 # 93./(50. + 93.) # voltage divider gain for capacitance calculation
+
+    # create Voltage and Capacitance arrays and find min/max ########
+    if voltage[0][0]!=9999:
+        xv = []
+        dvdt = []
+        preamp = []
+        Ppulse = []
+        for row in voltage:
+            xv.append(row[0])
+            dvdt.append(row[1])
+            preamp.append(row[2])
+            Ppulse.append(row[3])
+        yv = 1E12*((q_e*numpy.array(Ppulse,dtype=float)*1000.)/(e_ehp*.001*numpy.array(preamp,dtype=float)))*numpy.array(dvdt,dtype=float)
+        xmin = min([xmin]+xv)
+        xmax = max([xmax]+xv)
+        xv = array('d',xv)
+        yv = array('d',yv)
+        capacitance_values = [1.0E12*(q_e*e_gamma*p_pulse*1000.)/(eta*Vpulse*e_ehp*p_gam*1000.) for bias,dvdt,preamp,p_pulse,p_gam in voltage]
+        xc = []
+        yc = []
+        for row,row1 in zip(voltage,capacitance_values):
+            xc.append(row[0])
+            yc.append(row1)
+        xmin = min([xmin]+xc)
+        xmax = max([xmax]+xc)
+        xc = array('d',xc)
+        yc = array('d',yc)
+    xmin = 0.9*xmin
+    xmax = 1.1*xmax
+
+    # Rescale y-axes and create TGraphs and TGaxis ##################
+    legend = ROOT.TLegend(.4,.75,.6,.9)
+    legend.SetFillColor(0)
+    legend.SetBorderSize(1)
+    if voltage[0][0]!=9999:
+        slopev = (ymax-ymin)/(max(yv)+.1*abs(max(yv))-(min(yv)-.1*abs(min(yv))))
+        iceptv = ymax-slopev*(max(yv)+.1*abs(max(yv)))
+        newyv = [slopev*yval+iceptv for yval in yv]
+        febvoltgraph = TGraph(len(xv),xv,array('d',newyv))
+        febvoltgraph.SetMarkerStyle(3)
+        febvoltgraph.SetMarkerColor(1)
+        febaxis = ROOT.TGaxis(xmin,ymin,xmin,ymax,(ymin-iceptv)/slopev,(ymax-iceptv)/slopev,510,"-L")
+        febaxis.SetLabelOffset(.03)
+        febaxis.SetTitleOffset(1.15)
+        febaxis.SetTitle('Leackage Current [pA]')
+        febaxis.CenterTitle(1)
+        legend.AddEntry(febvoltgraph,'Leakage Current','p')
+        slopec = (ymax-ymin)/(1.1*max(yc)-.9*min(yc))    
+        iceptc = ymax-slopec*1.1*max(yc)
+        newyc = [slopec*yval+iceptc for yval in yc]
+        capvoltgraph = TGraph(len(xc),xc,array('d',newyc))
+        capvoltgraph.SetMarkerStyle(24)
+        capvoltgraph.SetMarkerColor(2)
+        capaxis = ROOT.TGaxis(xmax,ymin,xmax,ymax,(ymin-iceptc)/slopec,(ymax-iceptc)/slopec,510,"+L")
+        capaxis.SetTitle('Capacitance [pf]')
+        capaxis.CenterTitle(1)
+        capaxis.SetTitleOffset(1.15)
+        legend.AddEntry(capvoltgraph,'Capacitance','p')
+   
+    # Draw the combined plot ########################################
+    c1 = TCanvas('c1','',800,600)
+    c1.SetRightMargin(0.15)
+    hist = TH2D('hist','Bias Voltage Dependence;Bias Voltage [Pot Pnits];;',1,xmin,xmax,1,ymin,ymax)
+    xaxis = ROOT.TGaxis(xmin,ymin,xmax,ymin,xmin,xmax,510,"+L")
+    xaxis.SetTitle('Bias Voltage [V]')
+    xaxis.CenterTitle(1)
+    hist.Draw('AH')
+    xaxis.Draw()
+    legend.Draw()
+    if voltage[0][0]!=9999:
+        febvoltgraph.Draw('P')
+        febaxis.Draw()
+        capvoltgraph.Draw('P')
+        capaxis.Draw()
+    c1.Print(filename.replace('.data',plotype))
+
+def vsbiasplot(resdep,filename,plotype):
+    elements = ['Bias','FWHM']
+    values = BenLib.table2dic(elements,resdep)
+    xerrs = numpy.zeros(len(values['Bias']),dtype=numpy.float64)
+    yerrs = xerrs+2.0*.18 # this should be fixed to mean something ###
+    yerrs = yerrs*0.0
+    noisecurve = ROOT.TGraphErrors(len(values['Bias']),values['Bias'],values['FWHM'],xerrs,yerrs)
+    hist = TH2D("hist","FWHM vs Bias for "+filename.replace('.data',''),1,0.9*min(values['Bias']),1.1*max(values['Bias']),1,0.9*min(values['FWHM']),1.1*max(values['FWHM']))
+    hist.SetXTitle("Bias [V]")
+    hist.SetYTitle("FWHM [keV]")
+    hist.SetTitleOffset(1.4,'y')
+
+    # Set styles and draw everything
+    c1 = TCanvas('c1','',800,600)
+    c1.SetLogx(0)
+    c1.SetLogy(1)
+    hist.SetTitleSize(5,'')
+    hist.SetTitleSize(.045,'yx')
+    hist.SetLabelSize(.04,'yx')
+    hist.SetTitleOffset(1.4,'x')
+    hist.GetYaxis().SetMoreLogLabels()
+    hist.GetXaxis().SetMoreLogLabels()
+    noisecurve.SetMarkerStyle(3)
+    hist.Draw()
+    noisecurve.Draw('P')
+
+    # Write Output
+    c1.Print(filename.replace('.data','_vsbias'+plotype))
+
+
+def side_plot(sideset,sidedata,filename,plotype):
+    #make data useable
+    dat_elements = ['position','area','uncertainty']
+    [lowedge,highedge,livetime]=sideset
+    dat_vals = BenLib.table2dic(dat_elements,sidedata)
+
+    #create TGraphErrors of the data
+    positions = numpy.array(dat_vals['position'],dtype='d')
+    positions_ers = numpy.zeros(len(positions),dtype='d')+0.5
+    areas = numpy.array(dat_vals['area'],dtype='d')/livetime
+    areas_ers = numpy.array(dat_vals['uncertainty'],dtype='d')/livetime
+    data = ROOT.TGraphErrors(len(areas),areas,positions,areas_ers,positions_ers)
+
+    #create TGraphs vertical zero rate and crystal edges
+    top = ROOT.TLine(min(areas-areas_ers),highedge,max(areas+areas_ers),highedge)
+    top.SetLineWidth(2)
+    top.SetLineColor(2)
+    bot = ROOT.TLine(min(areas-areas_ers),lowedge,max(areas+areas_ers),lowedge)
+    bot.SetLineWidth(2)
+    bot.SetLineColor(2)
+    zro = ROOT.TLine(0,lowedge-10,0,highedge+10)
+    zro.SetLineWidth(2)
+
+    hist = ROOT.TH2D('hist','Side Scan; Event Rate [Hz]; Position [mm]',0,min(areas-areas_ers),max(areas+areas_ers),0,lowedge-10.,highedge+10.)
+    c1 = TCanvas('c1','',800,600)
+    hist.Draw()
+    top.Draw()
+    bot.Draw()
+    zro.Draw()
+    data.Draw('P')
+
+    c1.Print(filename.replace('.data',plotype))
+
+#####################################################################
+if __name__=="__main__":
+    if len(sys.argv)==1:
+        print 'usage: char <filename_must_have_correct_extension.data>'
+        sys.exit(1)
+    try:
+        characteristics(*sys.argv[1:])
+    except IndexError:
+        print 'You did not provide a valid input file to work with'
+        print 'what you did give is:'
+        print sys.argv[1:]
