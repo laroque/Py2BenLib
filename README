@@ -1,3 +1,7 @@
 This is a package of python2.x modules (where x is >= 6).
 
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+WARNING:
+I am moving on to python 3.x, some pieces will be ported in another repo (possibly laroque/Py3Neutrino), others abandoned. Hopefully there will be no further commits here.
+
 I use these modules in my every day work and they include various quick and dirty functions that I use regularly in many contexts. I do not hesitate to have outside dependencies so anyone using this beware.
